@@ -4,6 +4,9 @@ output: html_notebook
 ---
 
 ```{r}
+library(tidyverse)
+library(sf)
+library(leaflet)
 
 corn <- read.csv("RMACountyYieldsReport-115.csv")
 
@@ -74,8 +77,11 @@ h3_df <- h3_df |>
   mutate(h3_address = get_parent(h3_address, res = 4)) |>
   group_by(h3_address, year) |>
   summarise(yield = mean(yield, na.rm = TRUE), .groups = "drop")
+```
 
-write.csv(h3_df, "rma_h3.csv", row.names = FALSE)
+
+```{r}
+write.csv(h3_df, "rma_yields_h3_res_4.csv", row.names = FALSE)
 
 # Convert H3 addresses back to sf polygons
 h3_sf <- cell_to_polygon(h3_df$h3_address, simple = FALSE) |>
