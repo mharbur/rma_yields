@@ -1,0 +1,114 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+
+corn <- read.csv("RMACountyYieldsReport-115.csv")
+
+corn <- corn |>
+  rename(
+    commodity_code    = Commodity.Code,
+    commodity_name    = Commodity.Name,
+    state_code        = State.Code,
+    state_name        = State.Name,
+    state_abbr        = State.Abbreviation,
+    county_code       = County.Code,
+    county_name       = County.Name,
+    irr_code          = Irrigation.Practice.Code,
+    irr_practice      = Irrigation.Practice.Name,
+    year              = Yield.Year,
+    yield             = Yield.Amount
+)
+```
+
+```{r}
+corn_states <- corn |>
+  filter(trimws(state_abbr) %in% c(
+    "ND", "SD", "NE", "KS", "MN", "IA", "MO",
+    "AR", "LA", "MS", "AL", "WI", "IL", "MI",
+    "IN", "OH", "KY", "TN"
+  )) |>
+  mutate(
+    state_abbr = trimws(state_abbr),
+    FIPS = sprintf("%02d%03d", state_code, county_code)
+  )
+```
+
+```{r}
+library(tigris)
+
+counties <- counties(state = c("ND", "SD", "NE", "KS", "MN", "IA", "MO",
+    "AR", "LA", "MS", "AL", "WI", "IL", "MI", "IN", "OH", "KY", "TN"), 
+    cb=TRUE)
+
+corn_map <- counties |>
+  inner_join(corn_states, by = c("GEOID" = "FIPS")) |>
+  st_transform(4326)
+```
+```{r}
+library(h3jsr)
+# Fill each county polygon with H3 cells at resolution 4
+h3_list <- polygon_to_cells(corn_map, res = 5, simple = TRUE)
+
+# Expand list to data frame, join county attributes by row index
+h3_df <- tibble(
+  h3_address = unlist(h3_list),
+  row_idx    = rep(seq_along(h3_list), lengths(h3_list))
+) |>
+  left_join(
+    corn_map |> st_drop_geometry() |> mutate(row_idx = row_number()),
+    by = "row_idx"
+  ) |>
+  # Average yield where H3 cells span multiple counties
+  group_by(h3_address, year) |>
+  summarise(yield = mean(yield, na.rm = TRUE), .groups = "drop") |>
+  filter(!is.na(h3_address))
+```
+
+
+```{r}
+# convert to resolution=4
+h3_df <- h3_df |>
+  mutate(h3_address = get_parent(h3_address, res = 4)) |>
+  group_by(h3_address, year) |>
+  summarise(yield = mean(yield, na.rm = TRUE), .groups = "drop")
+
+write.csv(h3_df, "rma_h3.csv", row.names = FALSE)
+
+# Convert H3 addresses back to sf polygons
+h3_sf <- cell_to_polygon(h3_df$h3_address, simple = FALSE) |>
+  bind_cols(h3_df |> select(year, yield))
+```
+
+```{r}
+pal <- colorNumeric(
+  palette = "YlOrRd",
+  domain  = h3_sf$yield,
+  na.color = "#d0d0d0"
+)
+
+h3_sf |>
+filter(year == 2024) |>
+leaflet() |>
+  addProviderTiles(providers$CartoDB.Positron) |>
+  addPolygons(
+    fillColor  = ~pal(yield),
+    fillOpacity = 0.85,
+    color      = NA,
+    label      = ~paste0(round(yield, 1), "%"),
+    labelOptions = labelOptions(textsize = "11px")
+  ) |>
+  addLegend(
+    position = "bottomright",
+    pal      = pal,
+    values   = ~yield,
+    title    = "Corn Acres (%)<br><small>Percent of County Area<br>2024 RMA</small><br>
+    <small>Resolution = 4",
+    opacity  = 1
+  )
+
+```
+
+Missing values in map 
