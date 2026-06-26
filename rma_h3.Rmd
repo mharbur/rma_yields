@@ -47,9 +47,12 @@ counties <- counties(state = c("ND", "SD", "NE", "KS", "MN", "IA", "MO",
     cb=TRUE)
 
 corn_map <- counties |>
-  inner_join(corn_states, by = c("GEOID" = "FIPS")) |>
+  left_join(corn_states, by = c("GEOID" = "FIPS")) |>
   st_transform(4326)
+
 ```
+
+
 ```{r}
 library(h3jsr)
 # Fill each county polygon with H3 cells at resolution 4
@@ -85,18 +88,22 @@ write.csv(h3_df, "rma_yields_h3_res_4.csv", row.names = FALSE)
 
 # Convert H3 addresses back to sf polygons
 h3_sf <- cell_to_polygon(h3_df$h3_address, simple = FALSE) |>
-  bind_cols(h3_df |> select(year, yield))
+  bind_cols(h3_df |> select(year, yield)) 
+
 ```
 
 ```{r}
+h3_sf <- h3_sf |> mutate(yield = na_if(yield, NaN))
+
 pal <- colorNumeric(
   palette = "YlOrRd",
   domain  = h3_sf$yield,
-  na.color = "#d0d0d0"
+  na.color = "#d0d0d0",
+  
 )
 
 h3_sf |>
-filter(year == 2024) |>
+filter(year == 2022) |>
 leaflet() |>
   addProviderTiles(providers$CartoDB.Positron) |>
   addPolygons(
@@ -117,4 +124,10 @@ leaflet() |>
 
 ```
 
-Missing values in map 
+## Missing counties in South Dakota and Nebraska
+
+Counties absent from the map are those with no matching records in the RMA dataset. The county-level join (line 50) uses `inner_join`, so any county that does not appear in the RMA corn yield file is silently dropped.
+
+South Dakota and Nebraska both have large swaths of range and pasture land — primarily in their western regions — where corn production is minimal or non-existent. If no corn insurance policies were written in a county for a given year, RMA does not publish a yield record for it, and the county disappears from the map entirely. This is most visible in the Nebraska Sandhills and the western South Dakota plains, which are dominated by cattle ranching rather than row-crop agriculture.
+
+To include all counties (shading missing ones differently), the join on line 50 could be changed from `inner_join` to `left_join`, and `na.color` in the color palette would render unmatched counties in gray.
