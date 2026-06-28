@@ -31,27 +31,31 @@ corn <- corn |>
 ```{r}
 corn_states <- corn |>
   filter(trimws(state_abbr) %in% c(
-    "ND", "SD", "NE", "KS", "MN", "IA", 
-    "WI", "IL", "MI", "IN", "OH"
+    "MN", "IA", "WI", "IL", "MI", "IN", "OH"
   )) |>
   mutate(
     state_abbr = trimws(state_abbr),
     FIPS = sprintf("%02d%03d", state_code, county_code)
-  )
+  ) %>%
+  select(FIPS, state_abbr, year, yield)
 ```
 
+```{r}
+names(corn_states)
+```
 
 
 ```{r}
 library(tigris)
 
-counties <- counties(state = c("ND", "SD", "NE", "KS", "MN", "IA", "MO",
-    "AR", "LA", "MS", "AL", "WI", "IL", "MI", "IN", "OH", "KY", "TN"),
+counties <- counties(state = c("MN", "IA", "WI", "IL", "MI", "IN", "OH"),
     cb = TRUE)
+
 
 corn_map <- counties |>
   left_join(corn_states, by = c("GEOID" = "FIPS")) |>
-  st_transform(4326)
+  st_transform(4326) %>%
+  select(GEOID, NAME, state_abbr, year, yield)
 
 ```
 
