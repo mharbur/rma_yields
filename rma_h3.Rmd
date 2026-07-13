@@ -1,9 +1,8 @@
 ---
 title: "R Notebook"
-output: html_notebook
 ---
 
-```{r}
+```{r load RMA data}
 library(tidyverse)
 library(sf)
 library(leaflet)
@@ -23,15 +22,15 @@ corn <- corn |>
     irr_practice      = Irrigation.Practice.Name,
     year              = Yield.Year,
     yield             = Yield.Amount
-)
+) 
 ```
 
 
 
-```{r}
+```{r filter to midwest states}
 corn_states <- corn |>
-  filter(trimws(state_abbr) %in% c(
-    "MN", "IA", "WI", "IL", "MI", "IN", "OH"
+  filter(trimws(state_abbr) %in% c("ND", "SD", "NE", "KS",
+    "MN", "IA", "MO", "WI", "IL", "KY", "TN", "MI", "IN", "OH"
   )) |>
   mutate(
     state_abbr = trimws(state_abbr),
@@ -48,14 +47,13 @@ names(corn_states)
 ```{r}
 library(tigris)
 
-counties <- counties(state = c("MN", "IA", "WI", "IL", "MI", "IN", "OH"),
-    cb = TRUE)
-
+counties <- counties(cb = TRUE)
 
 corn_map <- counties |>
   left_join(corn_states, by = c("GEOID" = "FIPS")) |>
   st_transform(4326) %>%
-  select(GEOID, NAME, state_abbr, year, yield)
+  select(GEOID, NAME, state_abbr, year, yield) %>%
+  filter(!is.na(yield))
 
 ```
 
@@ -88,73 +86,95 @@ leaflet(corn_2022) |>
   )
 ```
 
+## Interpolate missing counties
 
-```{r}
-library(h3jsr)
-# Fill each county polygon with H3 cells at resolution 5
+```{r interpolate-adjacent-counties}
+# Counties in included states that border yield counties but have no yield data
+included_states <- corn_map_states |> st_drop_geometry() |> distinct(state_abbr) |> pull()
 
-h3_list <- polygon_to_cells(corn_map, res = 5, simple = TRUE)
+state_counties <- counties |>
+  filter(STUSPS %in% included_states) |>
+  st_transform(4326)
 
-# Expand list to data frame, join county attributes by row index
-h3_df <- tibble(
-  h3_address = unlist(h3_list),
-  row_idx    = rep(seq_along(h3_list), lengths(h3_list))
+yield_counties <- corn_map_states |>
+  group_by(GEOID) |>
+  slice(1) |>
+  ungroup()
+
+adj_touches <- st_touches(state_counties, yield_counties, sparse = TRUE)
+
+adjacent_no_yield <- state_counties |>
+  filter(
+    !(GEOID %in% yield_counties$GEOID),
+    lengths(adj_touches[seq_len(nrow(state_counties))]) > 0
+  )
+
+# Recompute touches between the 187 no-yield counties and yield counties
+adj_yield_touches <- st_touches(adjacent_no_yield, yield_counties, sparse = TRUE)
+
+neighbor_geoids <- map(adj_yield_touches, \(idx) yield_counties$GEOID[idx])
+
+# Average neighbor yields per year (neighbor-averaging IDW with equal weights)
+adj_interp <- tibble(
+  GEOID          = rep(adjacent_no_yield$GEOID, lengths(neighbor_geoids)),
+  neighbor_GEOID = unlist(neighbor_geoids)
 ) |>
   left_join(
-    corn_map |> st_drop_geometry() |> mutate(row_idx = row_number()),
-    by = "row_idx"
+    corn_map_states |> st_drop_geometry() |> select(GEOID, year, yield),
+    by = c("neighbor_GEOID" = "GEOID"),
+    relationship = "many-to-many"
   ) |>
-  # Average yield where H3 cells span multiple counties
-  group_by(h3_address, year) |>
+  group_by(GEOID, year) |>
   summarise(yield = mean(yield, na.rm = TRUE), .groups = "drop") |>
-  filter(!is.na(h3_address))
+  left_join(
+    adjacent_no_yield |> st_drop_geometry() |> select(GEOID, NAME, STUSPS),
+    by = "GEOID"
+  ) |>
+  rename(state_abbr = STUSPS)
+
+# Attach geometry and combine with original yield counties
+adj_interp_sf <- adjacent_no_yield |>
+  select(GEOID) |>
+  right_join(adj_interp, by = "GEOID")
+
+corn_map_augmented <- bind_rows(
+  corn_map_states |> select(GEOID, NAME, state_abbr, year, yield),
+  adj_interp_sf   |> select(GEOID, NAME, state_abbr, year, yield)
+)
 ```
 
-
 ```{r}
-write.csv(h3_df, "rma_yields_h3_res_5.csv", row.names = FALSE)
+corn_aug_2022 <- corn_map_augmented |> filter(year == 2022)
 
-# Convert H3 addresses back to sf polygons
-h3_sf <- cell_to_polygon(h3_df$h3_address, simple = FALSE) |>
-  bind_cols(h3_df |> select(year, yield)) 
-
-```
-
-```{r}
-h3_sf <- h3_sf |> mutate(yield = na_if(yield, NaN))
-
-pal <- colorNumeric(
-  palette = "YlOrRd",
-  domain  = h3_sf$yield,
-  na.color = "#d0d0d0",
-  
+pal_county_aug <- colorNumeric(
+  palette  = "YlOrRd",
+  domain   = corn_aug_2022$yield,
+  na.color = "#d0d0d0"
 )
 
-h3_sf |>
-filter(year == 2022) |>
-leaflet() |>
+leaflet(corn_aug_2022) |>
   addProviderTiles(providers$CartoDB.Positron) |>
   addPolygons(
-    fillColor  = ~pal(yield),
-    fillOpacity = 0.85,
-    color      = NA,
-    label      = ~paste0(round(yield, 1), " bu/acre"),
+    fillColor    = ~pal_county_aug(yield),
+    fillOpacity  = 0.85,
+    color        = "white",
+    weight       = 0.5,
+    label        = ~paste0(NAME, ", ", state_abbr, ": ", round(yield, 1), " bu/acre"),
     labelOptions = labelOptions(textsize = "11px")
   ) |>
   addLegend(
     position = "bottomright",
-    pal      = pal,
+    pal      = pal_county_aug,
     values   = ~yield,
-    title    = "Corn Yield (bu/acre)<br><small>2022 · RMA</small><br><small>Resolution = 4</small>",
+    title    = "Corn Yield (bu/acre)<br><small>2022 · RMA</small>",
     opacity  = 1
   )
-
 ```
 
-## Missing counties in South Dakota and Nebraska
+```{r}
+write.csv(corn_map_augmented, "rma_interpolated_yields.csv", row.names = FALSE)
+```
 
-Counties absent from the map are those with no matching records in the RMA dataset. The county-level join (line 50) uses `inner_join`, so any county that does not appear in the RMA corn yield file is silently dropped.
 
-South Dakota and Nebraska both have large swaths of range and pasture land — primarily in their western regions — where corn production is minimal or non-existent. If no corn insurance policies were written in a county for a given year, RMA does not publish a yield record for it, and the county disappears from the map entirely. This is most visible in the Nebraska Sandhills and the western South Dakota plains, which are dominated by cattle ranching rather than row-crop agriculture.
 
-To include all counties (shading missing ones differently), the join on line 50 could be changed from `inner_join` to `left_join`, and `na.color` in the color palette would render unmatched counties in gray.
+
