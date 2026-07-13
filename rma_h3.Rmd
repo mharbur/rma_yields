@@ -172,7 +172,10 @@ leaflet(corn_aug_2022) |>
 ```
 
 ```{r}
-write.csv(corn_map_augmented, "rma_interpolated_yields.csv", row.names = FALSE)
+corn_map_augmented |> 
+  as.data.frame() |> 
+  select(-geometry) |> 
+  write.csv("rma_interpolated_yields.csv", row.names = FALSE)
 ```
 
 
